@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from src.core import RMVEPitchAlgorithm
+from torch_rmve import RMVEPitchAlgorithm
 
 
 def test_random_audio_shapes() -> None:

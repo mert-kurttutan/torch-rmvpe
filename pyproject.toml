@@ -33,7 +33,7 @@ requires = ["hatchling>=1.22.0,<2.0.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/torch_rmve"]
 
 [dependency-groups]
 dev = [
