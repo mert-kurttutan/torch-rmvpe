@@ -310,8 +310,6 @@ def to_local_average_cents_old(salience, thred=0.0):
 def to_local_average_cents(salience, thred=0.0):
     batch_size, n_features, n_bins = salience.shape
     salience = salience.reshape(batch_size*n_features, n_bins)
-    if not hasattr(to_local_average_cents, "cents_mapping"):
-        to_local_average_cents.cents_mapping = torch.linspace(0, 7180, 360) + 1997.3794084376191
 
     average_cents = []
     max_salience = torch.max(salience, dim=1)
