@@ -8,15 +8,14 @@ from torch_rmve import RMVEPitchAlgorithm
 
 def test_random_audio_shapes() -> None:
     algorithm = RMVEPitchAlgorithm(sample_rate=16000, hop_size=160)
-    # audio = np.random.rand(16000).astype(np.float32) * 2.0 - 1.0
-    audio = torch.rand(16000) * 2.0 - 1.0
+    batch_size = 1
+    sample_rate = 16000
+    seconds = 30
+    audio = torch.rand(batch_size, sample_rate * seconds) * 2.0 - 1.0
 
     pitch, periodicity = algorithm.extract_continuous_periodicity(audio)
 
-    print("audio shape:", audio.shape)
-    print("pitch shape:", pitch.shape)
-    print("periodicity shape:", periodicity.shape)
-
-    expected_frames = len(audio) // algorithm.hop_size
-    assert pitch.shape == (expected_frames,)
-    assert periodicity.shape == (expected_frames,)
+    # expected_frames = len(audio) // algorithm.hop_size
+    expected_frames = (audio.shape[1] + algorithm.hop_size - 1) // algorithm.hop_size
+    assert pitch.shape == (batch_size, expected_frames)
+    assert periodicity.shape == (batch_size, expected_frames)

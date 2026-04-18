@@ -273,7 +273,8 @@ class RMVE(nn.Module):
             self.fc = nn.Sequential(nn.Linear(3 * N_MELS, N_CLASS), nn.Sigmoid())
 
     def forward(self, x):
-        mel = self.mel(x.reshape(-1, x.shape[-1]))
+        assert x.ndim == 2, "Input audio should be a 2D tensor of shape (num_batches, audio_length)"
+        mel = self.mel(x)
         n_frames = mel.shape[-1]
         n_pad = 32 * ((n_frames - 1) // 32 + 1) - n_frames
         if n_pad > 0:
@@ -286,22 +287,50 @@ class RMVE(nn.Module):
         return self.fc(x)
 
 
-def to_local_average_cents(salience, center=None, thred=0.0):
+def to_local_average_cents_old(salience, thred=0.0):
+    batch_size, n_features, n_bins = salience.shape
+    salience = salience.reshape(batch_size*n_features, n_bins)
     if not hasattr(to_local_average_cents, "cents_mapping"):
         to_local_average_cents.cents_mapping = torch.linspace(0, 7180, 360) + 1997.3794084376191
 
-    if salience.ndim == 1:
-        if center is None:
-            center = int(torch.argmax(salience).item())
-        start = max(0, center - 4)
-        end = min(len(salience), center + 5)
-        salience = salience[start:end]
-        product_sum = torch.sum(salience * to_local_average_cents.cents_mapping[start:end])
-        weight_sum = torch.sum(salience)
-        return product_sum / weight_sum if torch.max(salience) > thred else 0
-    if salience.ndim == 2:
-        return torch.stack([to_local_average_cents(salience[i, :], None, thred) for i in range(salience.shape[0])])
-    raise ValueError("label should be either 1d or 2d tensor")
+    average_cents = []
+    for i in range(salience.shape[0]):
+        salience_i = salience[i, :]
+        center_i = int(torch.argmax(salience_i).item())
+        start = max(0, center_i - 4)
+        end = min(len(salience_i), center_i + 5)
+        salience_window = salience_i[start:end]
+        cents_window = to_local_average_cents.cents_mapping[start:end]
+        product_sum = torch.sum(salience_window * cents_window)
+        weight_sum = torch.sum(salience_window)
+        average_cents.append(product_sum / weight_sum if torch.max(salience_window) > thred else 0)
+
+    return torch.stack(average_cents).reshape(batch_size, n_features)
+
+def to_local_average_cents(salience, thred=0.0):
+    batch_size, n_features, n_bins = salience.shape
+    salience = salience.reshape(batch_size*n_features, n_bins)
+    if not hasattr(to_local_average_cents, "cents_mapping"):
+        to_local_average_cents.cents_mapping = torch.linspace(0, 7180, 360) + 1997.3794084376191
+
+    average_cents = []
+    max_salience = torch.max(salience, dim=1)
+    center_i_tensor = max_salience.indices
+    max_cents_tensor = max_salience.values
+    salience_window_tensor = torch.zeros((batch_size*n_features, 9), device=salience.device)
+    cents_window_tensor = torch.zeros((batch_size*n_features, 9), device=salience.device)
+    start_tensor = torch.clamp(center_i_tensor - 4, min=0)
+    end_tensor = torch.clamp(center_i_tensor + 5, max=n_bins)
+    index_tensor = torch.arange(9, device=salience.device).unsqueeze(0) + start_tensor.unsqueeze(1)
+    end_mask = index_tensor < end_tensor.unsqueeze(1)
+    safe_index_tensor = index_tensor.clamp(max=n_bins - 1)
+    salience_window_tensor = torch.gather(salience, 1, safe_index_tensor) * end_mask
+    cents_window_tensor = 1997.3794084376191 + (7180 / 359) * index_tensor
+
+    salience_sum = torch.sum(salience_window_tensor, dim=1)
+    product_sum = torch.sum(salience_window_tensor * cents_window_tensor, dim=1)
+    average_cents_tensor = torch.where(max_cents_tensor > thred, product_sum / salience_sum, torch.tensor(0.0, device=salience.device))
+    return average_cents_tensor.reshape(batch_size, n_features)
 
 
 class RMVEPitchAlgorithm:
@@ -339,22 +368,15 @@ class RMVEPitchAlgorithm:
         self.model = model
 
     def _preprocess_audio(self, audio: torch.Tensor) -> torch.Tensor:
-        if len(audio.shape) == 2:
-            audio = torch.mean(audio, dim=1)
         audio = audio.to(torch.float32)
 
         if self.sample_rate != SAMPLE_RATE:
             audio_np = audio.cpu().numpy()
-            try:
-                from resampy import resample
+            from scipy.signal import resample
 
-                audio = resample(audio_np, self.sample_rate, SAMPLE_RATE)
-            except ImportError:
-                from scipy.signal import resample
-
-                target_length = int(len(audio) * SAMPLE_RATE / self.sample_rate)
-                audio = resample(audio_np, target_length).astype(np.float32)
-                audio = torch.from_numpy(audio).float().contiguous()
+            target_length = int(len(audio) * SAMPLE_RATE / self.sample_rate)
+            audio = resample(audio_np, target_length, axis=1).astype(np.float32)
+            audio = torch.from_numpy(audio).float().contiguous()
 
         return audio
 
@@ -362,30 +384,27 @@ class RMVEPitchAlgorithm:
         audio_processed = self._preprocess_audio(audio)
 
         with torch.no_grad():
-            pitch_pred = self.model(audio_processed.unsqueeze(0)).squeeze(0)
+            pitch_pred = self.model(audio_processed)
 
         cents = to_local_average_cents(pitch_pred, thred=0.0)
-        f0 = torch.tensor([10 * (2 ** (cent / 1200)) if cent else 0 for cent in cents], dtype=torch.float32)
-        periodicity = torch.max(pitch_pred, dim=1).values if pitch_pred.ndim > 1 else pitch_pred
-        model_hopsize_seconds = self.model_hop_length / SAMPLE_RATE
-        n_frames = len(f0)
-        times = torch.arange(n_frames) * model_hopsize_seconds
-        return times, f0, periodicity
+        f0 = torch.where(cents > 0, 10 * (2 ** (cents / 1200)), torch.tensor(0.0, device=cents.device))
+        periodicity = torch.max(pitch_pred, dim=2).values
+        return f0, periodicity
 
 
     def _get_default_threshold(self) -> float:
         return 0.03
 
     def extract_continuous_periodicity(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        times, pitch, periodicity = self._extract_raw_pitch_and_periodicity(audio)
+        target_length = (audio.shape[1] + self.hop_size - 1) // self.hop_size
+        pitch, periodicity = self._extract_raw_pitch_and_periodicity(audio)
         pitch, periodicity = self._sanity_check(pitch, periodicity)
-        target_length = (len(audio) + self.hop_size - 1) // self.hop_size
-        if pitch.shape[0] >= target_length:
-            pitch = pitch[:target_length]
-            periodicity = periodicity[:target_length]
+        if pitch.shape[1] >= target_length:
+            pitch = pitch[:, :target_length]
+            periodicity = periodicity[:, :target_length]
         else:
-            pitch = F.pad(pitch, (0, target_length - len(pitch)), mode="reflect")
-            periodicity = F.pad(periodicity, (0, target_length - len(periodicity)), mode="reflect")
+            pitch = F.pad(pitch, (0, target_length - pitch.shape[1]), mode="reflect")
+            periodicity = F.pad(periodicity, (0, target_length - periodicity.shape[1]), mode="reflect")
         return pitch, periodicity
 
     def _sanity_check(
