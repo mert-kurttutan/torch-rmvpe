@@ -53,15 +53,14 @@ class MelSpectrogram(nn.Module):
         super().__init__()
         n_fft = win_length if n_fft is None else n_fft
         self.hann_window = {}
-        mel_basis = mel(
+        self.mel_basis = torch.from_numpy(mel(
             sr=sampling_rate,
             n_fft=n_fft,
             n_mels=n_mel_channels,
             fmin=mel_fmin,
             fmax=mel_fmax,
             htk=True,
-        )
-        self.register_buffer("mel_basis", torch.from_numpy(mel_basis).float())
+        ))
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.win_length = win_length
@@ -357,11 +356,7 @@ class RMVEPitchAlgorithm:
             state_dict = load_file(str(model_path), device="cpu")
         else:
             raise ValueError(f"Unsupported model format: {model_path.suffix}")
-
-        model_dict = model.state_dict()
-        filtered_dict = {k: v for k, v in state_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
-        model_dict.update(filtered_dict)
-        model.load_state_dict(model_dict)
+        model.load_state_dict(state_dict, strict=True)
         model.eval()
         self.model = model
 
@@ -369,11 +364,10 @@ class RMVEPitchAlgorithm:
         audio = audio.to(torch.float32)
 
         if self.sample_rate != SAMPLE_RATE:
-            audio_np = audio.cpu().numpy()
             from scipy.signal import resample
 
             target_length = int(len(audio) * SAMPLE_RATE / self.sample_rate)
-            audio = resample(audio_np, target_length, axis=1).astype(np.float32)
+            audio = resample(audio.cpu().numpy(), target_length, axis=1)
             audio = torch.from_numpy(audio).float().contiguous()
 
         return audio
@@ -388,10 +382,6 @@ class RMVEPitchAlgorithm:
         f0 = torch.where(cents > 0, 10 * (2 ** (cents / 1200)), torch.tensor(0.0, device=cents.device))
         periodicity = torch.max(pitch_pred, dim=2).values
         return f0, periodicity
-
-
-    def _get_default_threshold(self) -> float:
-        return 0.03
 
     def extract_continuous_periodicity(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         target_length = (audio.shape[1] + self.hop_size - 1) // self.hop_size
@@ -408,9 +398,6 @@ class RMVEPitchAlgorithm:
     def _sanity_check(
         self, pitch: torch.Tensor, periodicity: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        periodicity = torch.nan_to_num(periodicity, nan=0.0)
-        pitch = torch.nan_to_num(pitch, nan=0.0)
-
         voiced = periodicity > 0
         pitch[~voiced] = 0.0
         pitch[voiced] = torch.clamp(pitch[voiced], self.fmin, self.fmax)
