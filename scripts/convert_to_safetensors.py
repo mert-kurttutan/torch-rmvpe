@@ -45,7 +45,14 @@ def main() -> None:
         urllib.request.urlretrieve(DEFAULT_MODEL_URL, checkpoint_path)
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         state_dict = extract_state_dict(checkpoint)
-        tensors = {key: value.detach().cpu().contiguous() for key, value in state_dict.items()}
+        print(f"state_dict keys: {list(state_dict.keys())}")
+        tensors = {}
+        for key, value in state_dict.items():
+            if "shortcut.weight" in key:
+                assert value.shape[-1] == 1 and value.shape[-2] == 1, f"Expected shortcut tensor to have shape [out_channels, in_channels, 1, 1], but got {value.shape}"
+                tensors[key] = value.cpu().contiguous().view(value.shape[0], value.shape[1])
+            else:
+                tensors[key] = value.cpu().contiguous()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     metadata = {"source_checkpoint": DEFAULT_MODEL_URL}

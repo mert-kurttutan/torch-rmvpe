@@ -113,13 +113,20 @@ class ConvBlockRes(nn.Module):
             nn.ReLU(),
         )
         if in_channels != out_channels:
-            self.shortcut = nn.Conv2d(in_channels, out_channels, (1, 1))
+            self.shortcut = nn.Linear(in_channels, out_channels)
             self.is_shortcut = True
         else:
             self.is_shortcut = False
 
     def forward(self, x):
-        return self.conv(x) + (self.shortcut(x) if self.is_shortcut else x)
+        if self.is_shortcut:
+            out = self.conv(x)
+            b, c, h, w = x.shape
+            x_reshaped = x.view(b, c, -1).transpose(1, 2)
+            shortcut_out = self.shortcut(x_reshaped).transpose(1, 2).view(b, -1, h, w)
+            return out + shortcut_out
+        else:
+            return self.conv(x) + x
 
 
 class ResEncoderBlock(nn.Module):
