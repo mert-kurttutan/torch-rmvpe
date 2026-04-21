@@ -293,7 +293,7 @@ class RMVE(nn.Module):
         return self.fc(x)
 
 
-def to_local_average_cents_old(salience, thred=0.0):
+def to_local_average_cents_old(salience, thred=0.5):
     batch_size, n_features, n_bins = salience.shape
     salience = salience.reshape(batch_size*n_features, n_bins)
     if not hasattr(to_local_average_cents, "cents_mapping"):
@@ -313,7 +313,7 @@ def to_local_average_cents_old(salience, thred=0.0):
 
     return torch.stack(average_cents).reshape(batch_size, n_features)
 
-def to_local_average_cents(salience, thred=0.0):
+def to_local_average_cents(salience, thred=0.5):
     batch_size, n_features, n_bins = salience.shape
     salience = salience.reshape(batch_size*n_features, n_bins)
 
@@ -385,7 +385,7 @@ class RMVEPitchAlgorithm:
         with torch.no_grad():
             pitch_pred = self.model(audio_processed)
 
-        cents = to_local_average_cents(pitch_pred, thred=0.0)
+        cents = to_local_average_cents(pitch_pred, thred=0.5)
         f0 = torch.where(cents > 0, 10 * (2 ** (cents / 1200)), torch.tensor(0.0, device=cents.device))
         periodicity = torch.max(pitch_pred, dim=2).values
         return f0, periodicity
